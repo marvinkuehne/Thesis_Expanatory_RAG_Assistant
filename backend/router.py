@@ -86,6 +86,10 @@ async def askForm(payload: AskPayload):
         return [{"error": str(e)}, []]
 
 
+@app.post("/ingest_folder_files")
+
+
+
 @app.post("/upload_files")
 async def uploadFiles(file: UploadFile = File(...),
                       user_id: str = Form(...)):  # receive formdata object and read parameter "file" and "category"
@@ -107,6 +111,8 @@ async def uploadFiles(file: UploadFile = File(...),
         "size": len(content),
         "path": uploaded_file_path
     }
+
+
 
 
 @app.get("/get_user_files/{user_id}")

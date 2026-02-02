@@ -1,0 +1,1 @@
+export type Session = { session_id: string; title: string };

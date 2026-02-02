@@ -1,6 +1,6 @@
 import {type ChangeEvent, useEffect, useRef, useState} from "react";
 import {FileAudio, FileIcon, FileImage, FileText, FileVideo, Plus, Trash2, Upload, X} from 'lucide-react';
-import api from "../api";
+import api from "../api.ts";
 import CreatableSelect from "react-select/creatable";
 import {components, type OptionProps, type StylesConfig} from "react-select";
 import {useUserId} from "../components/useUserID.ts";
