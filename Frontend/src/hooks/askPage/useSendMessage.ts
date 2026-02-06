@@ -5,7 +5,6 @@ import type {CatOption} from "../../types/categories.ts";
 
 
 // pack json object in form that the BaseModel in router expects (uses axios)
-
 export function useSendMessage(
     userId: string | null,
     selectedCategories: CatOption[],
@@ -30,7 +29,6 @@ export function useSendMessage(
         const response = await api.post("/ask", {
             query: input,
             categories: selectedCategories.map(c => c.label),
-            user_id: userId,
         });
 
 
