@@ -1,0 +1,6 @@
+#!/Users/marvinkuhne/SW_Projects/Thesis_Expanatory_RAG_Assistant/.venv/bin/python
+import sys
+from oci_cli.cli import cli
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(cli())

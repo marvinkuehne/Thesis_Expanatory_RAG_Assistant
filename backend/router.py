@@ -1,24 +1,17 @@
 import os
 import uvicorn
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Query
 from pydantic import BaseModel
-from typing import List, Optional
-
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from starlette.middleware.cors import CORSMiddleware
 
-from Loader import (
-    load_docs,
-    split_documents_semantic,
-    create_ids,
-    get_embedding,
-    build_search_docs,
-    upsert_docs,
-    search_client,
-    delete_chunks_for_file,
-)
+from Loaders.Loader_Switcher import (Target, ingest)
+from typing import Optional, List
 
+from Loaders.Azure_Loader import delete_chunks_for_file, search_client
+from Loaders.Chroma_Loader import delete_from_chroma_for_file
 from services.search_services import update_category_for_file
+
 from query_data import query_rag
 from db.chat_db import create_session, get_sessions, save_session, load_session, conn
 
@@ -49,17 +42,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Decide via HTTP the Loader "POST /process_files?target=chroma"
+def parse_backend(backend: Target): #Import Target from Load_Switcher
+    backend = (backend or "").lower()
+    if backend == "chroma":
+        return Target.CHROMA
+    return Target.AZURE
 
-# -------------------------
-# Models
-# -------------------------
 
+# Pydantic Models: Forces Frontend API calls to pass right data format to routes
 class FileItem(BaseModel):
     filename: str
     category: Optional[str] = None
-
-
-from typing import Optional, List
 
 class FileList(BaseModel):
     files: Optional[List[FileItem]] = None
@@ -75,26 +69,17 @@ class AskPayload(BaseModel):
     categories: Optional[List[str]] = None
 
 
-# -------------------------
+# ------
 # Azure Blob setup
-# -------------------------
+# ------
 
 blob_service = BlobServiceClient.from_connection_string(os.getenv("AZURE_CONNECTION_STRING"))
 container_client = blob_service.get_container_client("docs")
 
 
-# -------------------------
+# -------
 # RAG endpoints (global pool)
-# -------------------------
-
-@app.post("/ask")
-async def askForm(payload: AskPayload):
-    try:
-        answer, sources = query_rag(payload.query, payload.categories)
-        return [answer, sources]
-    except Exception as e:
-        return [f"Error: {str(e)}", []]
-
+# --------
 
 @app.post("/upload_files")
 async def uploadFiles(file: UploadFile = File(...)):
@@ -111,6 +96,23 @@ async def uploadFiles(file: UploadFile = File(...)):
     return {"ok": True, "blob": blob_name, "size": len(content)}
 
 
+@app.post("/ask")
+async def askForm(payload: AskPayload, backend: str = Query("chroma")):
+    try:
+        answer, sources = query_rag(payload.query, payload.categories, backend=backend)
+
+
+        print("ANSWER (first 200):", (answer or "")[:200])
+        print("SOURCES:", sources)
+
+        return [answer, sources]
+    except Exception as e:
+        return [f"Error: {str(e)}", []]
+
+
+
+
+
 @app.get("/get_files")
 async def get_files():
     out = []
@@ -125,68 +127,31 @@ async def get_files():
 
 
 @app.delete("/delete_file/{filename}")
-async def delete_file(filename: str):
-    blob_client = container_client.get_blob_client(filename)
+async def delete_file(filename: str, backend: str = Query("azure")):
+    target = parse_backend(backend)
 
-    # 1) blob löschen
+    # 1) blob löschen (immer)
+    blob_client = container_client.get_blob_client(filename)
     try:
         blob_client.delete_blob()
     except Exception:
         pass
 
-    # 2) chunks im Search Index löschen
-    delete_chunks_for_file(search_client, filename)
+    # 2) Index/DB löschen je nach backend
+    if target == Target.AZURE:
+        delete_chunks_for_file(search_client, filename)
+    else:
+        delete_from_chroma_for_file(filename)
 
-    return {"ok": True, "deleted_file": filename}
+    return {"ok": True, "deleted_file": filename, "backend": backend}
 
 
 @app.post("/process_files")
-async def processFiles(payload: FileList):
-    progress_store["value"] = 0
+async def processFiles(target: Target = Target.CHROMA):
 
-    # 1) Wenn keine files oder leere Liste: alle Blobs im Container
-    if not payload.files:
-        blob_names = [b.name for b in container_client.list_blobs()]
-    else:
-        blob_names = [f.filename for f in payload.files]
+    blob_names = [b.name for b in container_client.list_blobs()]
 
-    # 2) Wenn wirklich keine Dateien existieren -> sauber raus
-    if not blob_names:
-        progress_store["value"] = 100
-        return {"processed_files": [], "count": 0, "message": "No files found in container."}
-
-    # (Optional aber empfohlen) Duplikate vermeiden: vorher alte Chunks löschen
-    for name in blob_names:
-        try:
-            delete_chunks_for_file(search_client, name)
-        except Exception as e:
-            print("warning delete_chunks_for_file:", name, e)
-
-    # 3) Pipeline
-    docs = load_docs(blob_names)
-    progress_store["value"] = 20
-
-    if not docs:
-        progress_store["value"] = 100
-        return {"processed_files": blob_names, "count": len(blob_names), "message": "No documents loaded (unsupported or empty files)."}
-
-    chunks = split_documents_semantic(docs)
-    progress_store["value"] = 50
-
-    if not chunks:
-        progress_store["value"] = 100
-        return {"processed_files": blob_names, "count": len(blob_names), "message": "No chunks created."}
-
-    chunks = create_ids(chunks)
-    vectors = get_embedding(chunks)
-    progress_store["value"] = 75
-
-    search_docs = build_search_docs(chunks, vectors)
-    upsert_docs(search_docs)
-
-    progress_store["value"] = 100
-    return {"processed_files": blob_names, "count": len(blob_names), "chunks": len(search_docs)}
-
+    return ingest(blob_names, target=target)
 
 @app.get("/progress")
 async def get_progress():
@@ -195,14 +160,10 @@ async def get_progress():
 
 @app.post("/update_category")
 async def update_file_category(update: CategoryUpdate):
+
     # source_blob ist filename im global pool
     update_category_for_file(search_client, update.filename, update.category)
     return {"ok": True}
-
-
-# -------------------------
-# Chroma Endpoints
-# -------------------------
 
 
 

@@ -11,3 +11,6 @@ starlette==0.48.0
 uvicorn==0.37.0
 python-multipart
 pymupdf
+
+azure-core~=1.38.0
+oci-cli~=3.74.0

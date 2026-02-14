@@ -1,4 +1,3 @@
-import os
 
 def update_category_for_file(search_client, user_id: str, source_blob: str, category: str | None):
     results = search_client.search(
